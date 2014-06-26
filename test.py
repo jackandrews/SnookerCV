@@ -57,6 +57,8 @@ class TableEdge():
             return "wood"
 
     def is_edge(self):
+        """ This function returns true if the edge has wood on one side of it and cloth on the other """
+
         # get the surface types either side of edge
         (x1p, y1p, x2p, y2p) = self.get_offset_coords1()
         surface1 = self.get_offset_surface_type(x1p, y1p, x2p, y2p)
@@ -74,8 +76,8 @@ class TableEdge():
         """
 
         height, width = self.im.shape[:2]
-        if abs(self.y1-self.y2) < 10:   #is it horizontal?
-            if self.y1 < height/2:
+        if abs(self.y1-self.y2) < 10:   #is it vaguely horizontal?
+            if self.y1 < height/2:      #if in the top half of the screen, then top edge
                 return "top"
             else:
                 return "bottom"
@@ -91,14 +93,21 @@ class TableEdge():
 class Table:
     def __init__(self, im):
         self.im = im
-
         self.im_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        #mask = cv2.inRange(self.im_hsv, np.array((0, 0, 180)), np.array((255, 255, 255)))
 
-        all_edges = self.find_edges()
+        edges = self.find_edges()
+        edges = self.refine_edges(edges)
+        self.corners = self.calc_corners(edges)
 
-        #TODO: remove
-        self.all_edges = all_edges
+    def find_edges(self):
+        all_edges = []
+        im_grey = cv2.cvtColor(img, cv2.cv.CV_RGB2GRAY)
+        im_edges = cv2.Canny(im_grey, 80, 40, apertureSize=3)
+        lines = cv2.HoughLinesP(im_edges, rho=1, theta=np.pi/180, threshold=50, minLineLength=100, maxLineGap=50)
+        for x1, y1, x2, y2 in lines[0]:
+            edge = TableEdge(self.im_hsv, x1, y1, x2, y2)
+            if edge.is_edge():
+                all_edges.append(edge)
 
         #group sets of edges
         left_edges = [edge for edge in all_edges if edge.edge_pos == "left"]
@@ -113,18 +122,6 @@ class Table:
         edges['top'] = self.merge_edges(top_edges)
         edges['bottom'] = self.merge_edges(bottom_edges)
 
-        #find the corners
-        self.corners = self.calc_corners(edges)
-
-    def find_edges(self):
-        edges = []
-        im_grey = cv2.cvtColor(img, cv2.cv.CV_RGB2GRAY)
-        im_edges = cv2.Canny(im_grey, 80, 40, apertureSize = 3)
-        lines = cv2.HoughLinesP(im_edges, rho=1, theta=np.pi/180, threshold=50, minLineLength=100, maxLineGap=50)
-        for x1, y1, x2, y2 in lines[0]:
-            edge = TableEdge(self.im_hsv, x1, y1, x2, y2)
-            if edge.is_edge():
-                edges.append(edge)
         return edges
 
     def merge_edges(self, edges):
@@ -135,7 +132,7 @@ class Table:
 
         points = np.reshape(points, (len(edges)*2,2))
 
-        [vx, vy, x, y] = cv2.fitLine(points, cv2.cv.CV_DIST_L2, 0, 0.01, 0.01)
+        [vx, vy, x, y] = cv2.fitLine(points, cv2.cv.CV_DIST_HUBER, 0, 0.01, 0.01)
         lefty = int((-x*vy/vx) + y)
         righty = int(((self.im.shape[1]-x)*vy/vx)+y)
 
@@ -143,12 +140,18 @@ class Table:
 
         return vx, vy, x, y
 
+    def refine_edges(self, edges):
+        #TODO: refine accuracy of edge by wiggling around
+        return edges
+
     def calc_corners(self, edges):
         corners = {}
         corners['top_left'] = self.calc_line_intersect(edges['top'], edges['left'])
         corners['top_right'] = self.calc_line_intersect(edges['top'], edges['right'])
         corners['bottom_left'] = self.calc_line_intersect(edges['bottom'], edges['left'])
         corners['bottom_right'] = self.calc_line_intersect(edges['bottom'], edges['right'])
+
+        return corners
 
     def calc_line_intersect(self, line1, line2):
         vx1, vy1, x1, y1 = line1
@@ -162,8 +165,6 @@ class Table:
 
         x = x1 + vx1 * u
         y = y1 + vy1 * u
-
-        cv2.circle(self.im, (x, y), 5, (0, 255, 0))
 
         return x, y
 
@@ -184,11 +185,21 @@ img = cv2.imread("table.png")
 print ocr_score(img, 441, 340, 460, 364)
 
 table = Table(img)
-#for edge in table.edges:
-#    cv2.line(img, (edge.x1, edge.y1), (edge.x2, edge.y2), (0, 0, 255), 1)
-#    cv2.putText(img, edge.edge_pos, (edge.x1, edge.y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 255)
-#
-#cv2.line(img,(edge.x1,edge.y1),(edge.x2,edge.y2),(0,255,0),1)
+src = np.array([table.corners['bottom_left'], table.corners['bottom_right'], table.corners['top_right'], table.corners['top_left']])
+
+#the size of a snooker table in mm
+dest = np.array([[0, 0], [1778, 0], [1778, 3569], [0, 3569]], np.float32)
+dest = dest / 5
+
+transform = cv2.getPerspectiveTransform(src, dest)
+im_warp = cv2.warpPerspective(img, transform, (600, 800))
+
+for corner in table.corners:
+    x, y = table.corners[corner]
+    cv2.circle(img, (x, y), 5, (0, 255, 0))
+    cv2.putText(img, corner, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 255)
+
+cv2.imshow('warp', im_warp)
 
 #cv2.imshow('edges', im_edges)
 cv2.imshow('blur', img)
